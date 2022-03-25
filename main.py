@@ -1,61 +1,60 @@
 from itertools import product
 from math import comb
 
-""" `N` is the size of the underlying set of the topology. """
-N = 10
+def get_inventory_bound(inv, n, m):
+    """Calculate an upper bound of `inv[m]`.
 
-"""" `X` is the underlying set of the topology. """
-X = list(range(N))
+    :param inv: type `tuple`.
+    :param n: type `int`. The size of the finite topology for the inventory `inv`.
+    :param m: type `int`.
+    :return: type `int`.
+    """
+    # Currently we only have the trivial upper bound.
+    return n - sum(inv[1:m])
 
-"""
-An inventory is a list of non-negative integers of length `N`.
+class inventories:
 
-If `inv` is an inventory and `1 <= k <= N`, then `inv[k-1]` is the number of open sets in
-a minimal basis of size `k`. 
+    def __init__(self, n):
+        self.n = n
+        self._curr_inv = (1,) + (0,) * self.n
+        self._bounds = [1] + [get_inventory_bound(self._curr_inv, self.n, m) for m in range(1,self.n+1)]
+        self._curr_incr_index = 5
+        self._raise_stop_iteration = False
 
-The Python standard library function `comb` calculates binomial coefficients. Follow this
-link for a description:
-https://docs.python.org/3/library/math.html#math.comb
+    def __iter__(self):
+        return self
 
-Naively, `inv[k-1]` can take on any value between 0 and `comb(N,k)`, inclusive.
+    def __next__(self):
 
-The following code creates a list `inventories` of all possible naive inventories.
-"""
+        if self._raise_stop_iteration:
+            raise StopIteration
 
-ranges = []
+        i = self._curr_incr_index
 
-for k in range(N):
-    ranges.append( range(comb(N, k + 1) + 1) )
+        finding_increment = True
+        while finding_increment:
 
-inventories = []
+            if i == 0:
+                self._raise_stop_iteration = True
+                return self._curr_inv
 
-"""
-The idiom `product(*tuple(ranges))` found below is a bit tricky to understand but it is extremely useful.
+            elif self._bounds[i] is None:
+                first_None_index = self._bounds.index(None)
+                for j in range(first_None_index, self.n+1):
+                    self._bounds[j] = get_inventory_bound(self._curr_inv, self.n, j)
 
-Recall that the function `product` is a Python standard library function. It takes the Cartesian
-product of an arbitrary number of iterables. You can find the docs for `product` here:
-https://docs.python.org/3/library/itertools.html#itertools.product
+            if self._curr_inv[i] < self._bounds[i]:
+                next_inv = self._curr_inv[:i] + (self._curr_inv[i] + 1,) + (0,) * (self.n - i)
+                finding_increment = False
 
-A naive inventory is an element of
-`product(ranges[0], ranges[1], ranges[2], ..., ranges[N-1])`
+            else:
+                self._bounds[i] = None
+                i -= 1
 
-However, we cannot use the `...` syntax in this way in Python. Instead, we must use the unary 
-"unpacking" operator, denoted by `*`. This operator takes a tuple and turns each element of the 
-tuple into an argument of a function. 
-
-So for example, you could do
-`comb(*(5,3))`
-which gives you the same number as `comb(5,3)` does. The operator `*` is useless in this context.
-However, `*` is very useful when the function can take a variable number of arguments, like
-`product` does. 
-
-So `product(*tuple(ranges))` takes the list `ranges`, converts it to a tuple, then "unpacks" it
-for the variable-parameter function `product`.  
-"""
-for inv in product(*tuple(ranges)):
-    inventories.append(inv)
-
-
+        self._curr_incr_index = self.n
+        ret = self._curr_inv
+        self._curr_inv = next_inv
+        return ret
 
 
 
