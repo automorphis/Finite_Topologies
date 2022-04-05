@@ -1,9 +1,52 @@
 import itertools
+from collections import Counter
 from itertools import product
 from math import comb, log
 from pathlib import Path
 
 import numpy as np
+
+def is_subset(a, b, a_len = None):
+    if a_len is None:
+        a_len = np.sum(a)
+    return np.sum(a * b) == a_len
+
+def is_strict_subset(a, b, a_len = None, b_len = None):
+    if a_len is None:
+        a_len = np.sum(a)
+    if b_len is None:
+        b_len = np.sum(b)
+    intersection_len = np.sum(a * b)
+    return intersection_len == a_len and a_len < b_len
+
+def check_represents_T0_topology(top):
+    n = len(top)
+    topT = np.copy(top).transpose()
+
+    # check dtype
+    if top.dtype is not np.dtype('int'):
+        return False
+
+    # check is 0-1
+    if len(np.where(top == 1)[0]) + len(np.where(top == 0)[0]) != n ** 2:
+        return False
+
+    # check contains diagonal
+    if np.sum(np.diagonal(top)) != n:
+        return False
+
+    # check T0
+    for i in range(n):
+        open_set = topT[:,i]
+        if np.any(np.all(topT[:i, :] == open_set, axis=1)):
+            return False
+
+    # check minimal basis property
+    for i1, i2 in itertools.combinations(range(n), 2):
+        if top[i1,i2] == 1 and not is_subset(top[:,i1], top[:,i2]):
+            return False
+
+    return True
 
 def _bitflip_ndarray_inplace(a):
     a *= -1
@@ -32,9 +75,16 @@ def get_inventory_bound(inv, n, m):
 def calc_inventory(top):
      inv = np.zeros(len(top)+1)
      inv[0] = 1
-     sizes, counts = np.unique(np.sum(top, axis=2), return_counts=True)
+     sizes, counts = np.unique(np.sum(top, axis=0), return_counts=True)
      inv[sizes] = counts
      return inv
+
+def calc_row_inventory(top):
+    inv = np.zeros(len(top) + 1)
+    inv[0] = 1
+    sizes, counts = np.unique(np.sum(top, axis=1), return_counts=True)
+    inv[sizes] = counts
+    return inv
 
 def check_homeomorphism(top1, top2, homeo):
     """Short-circuited check for homeomorphism. It is preferred to call this rather than calling
@@ -46,11 +96,26 @@ def check_homeomorphism(top1, top2, homeo):
     :return: `True` if `homeo` is indeed a homeomorphism from `top1` to `top2` and `False` otherwise.
     """
 
-    if len(top1) != len(top2) or len(top1) != len(homeo) or len(top1) != len(set(homeo)):
+    if len(top1) != len(top2) or len(top1) != len(homeo) or len(set(homeo)) != len(top1):
         return False
 
     else:
-        return all(np.all(top1[homeo,i] == top2[:,homeo[i]]) for i in range(len(top1)))
+        top1 = top1[:,homeo]
+        top1 = top1[homeo,:]
+        return np.all(top1 == top2)
+
+        # n = len(top1)
+        # homeo_mat = np.zeros((n,n),dtype=int)
+        # homeo_mat[np.arange(n), homeo] = 1
+        # homeo_matT = np.copy(homeo_mat).transpose()
+        # return (
+        #     np.all(np.matmul(np.matmul(homeo_mat, top1), homeo_matT) == top2) or
+        #     np.all(np.matmul(np.matmul(homeo_mat, top2), homeo_matT) == top1)
+        # )
+        # return (
+        #     all(np.all(top1[homeo, i] == top2[:, homeo[i]]) for i in range(len(top1))) or
+        #     all(np.all(top2[homeo, i] == top1[:, homeo[i]]) for i in range(len(top1)))
+        # )
 
 def apply_homeomorphism(top, homeo):
     """
@@ -75,7 +140,10 @@ def are_homeomorphic(top1, top2, skip_calc_inventory = False):
     if len(top1) != len(top2):
         return False
 
-    elif not skip_calc_inventory and calc_inventory(top1) != calc_inventory(top2):
+    elif not skip_calc_inventory and np.any(calc_inventory(top1) != calc_inventory(top2)):
+        return False
+
+    elif np.any(calc_row_inventory(top1) != calc_row_inventory(top2)):
         return False
 
     n = len(top1)
@@ -86,6 +154,7 @@ def are_homeomorphic(top1, top2, skip_calc_inventory = False):
     possible_images = [np.where(sizes2 == sizes1[i])[0] for i in range(n)]
 
     for homeo in itertools.product(*possible_images):
+    # for homeo in itertools.permutations(range(n)):
         if check_homeomorphism(top1, top2, homeo):
             return True
 
@@ -147,7 +216,7 @@ class _Minimal_Open_Set_Iterator:
         self._minimal_open_set_mask = np.zeros(self.n, dtype=int)
         # intersection of all U_x such that `self.i` is in U_x
         np.all(
-            self.curr_top[:, np.nonzero(self.curr_top[self.i,:])[0]],
+            self.curr_top[:, np.nonzero(self.curr_top[self.i,:self.i])[0]],
             axis = 1,
             out = self._minimal_open_set_mask
         )
@@ -157,14 +226,15 @@ class _Minimal_Open_Set_Iterator:
         # x such that U_x does not contains `self.i`
         self._far_indices = np.where(self.curr_top[self.i, :self.i] == 0)[0]
 
-        # union of U_x for all x in `self._far_indices`.
-        self._max_carryover_union = np.zeros(self.n, dtype=int)
-        np.any(self.curr_top[:, self._far_indices], axis = 1, out = self._max_carryover_union)
-        self._max_carryover_union_length = np.sum(self._max_carryover_union)
+        # x such that U_x \subset `self._minimal_open_set_mask` and U_x does not contain `self.i`
+        self._carryover_indices = []
+        for i in self._far_indices:
+            if is_subset(self.curr_top[:,i], self._minimal_open_set_mask, self.flattened_inv[i]):
+                self._carryover_indices.append(i)
+        self._carryover_indices = np.array(self._carryover_indices, dtype=int)
 
-        self._noncarryover_indices = np.nonzero(self._minimal_open_set_mask * (1 - self._max_carryover_union))[0]
-        self._noncarryover_indices = self._noncarryover_indices[np.where(self._noncarryover_indices != self.i)]
-        self._noncarryover_length = len(self._noncarryover_indices) + 1
+        self._carryover_mask = np.zeros(self.n, dtype=int)
+        self._carryover_mask[self._carryover_indices] = 1
 
         # if `self._minimal_open_set_mask` matches any previous column of `self._curr_top`
         if self.i > 0:
@@ -174,9 +244,13 @@ class _Minimal_Open_Set_Iterator:
         else:
             self._mask_match = False
 
+        self._noncarryover_mask = self._minimal_open_set_mask * (1 - self._carryover_mask)
+        self._noncarryover_mask[self.i] = 0
+
         self._carryover_index = 0
-        self._max_carryover_index = 2 ** len(self._far_indices) - 1
-        self._non_carryover_iter = None
+        self._max_carryover_index = 2 ** len(self._carryover_indices) - 1
+
+        self._noncarryover_iter = None
         self.carryover_union = None
         self.num_ones_in_union = None
 
@@ -204,35 +278,44 @@ class _Minimal_Open_Set_Iterator:
             if self._carryover_index > self._max_carryover_index:
                 raise StopIteration
 
-            if self._non_carryover_iter is None:
+            if self._noncarryover_iter is None:
 
                 subset = self.power_set[:,self._carryover_index]
-                carryover_cols = self.curr_top[:, self._far_indices[subset[1:1+subset[0]]]]
+                size = subset[0]
+                indices = subset[1:size+1]
+
+                carryover_cols = self.curr_top[:, self._carryover_indices[indices]]
                 self.carryover_union = np.zeros(self.n, dtype=int)
                 np.any(carryover_cols, axis = 1, out = self.carryover_union)
-                intersection_length = np.sum(self.carryover_union * self._minimal_open_set_mask)
+
                 carryover_length = np.sum(self.carryover_union)
-                is_subset = intersection_length == carryover_length
-                is_strict_subset = intersection_length < self._mask_length
+                _is_subset = is_subset(
+                    self.carryover_union, self._minimal_open_set_mask, carryover_length
+                )
+                _is_strict_subset = is_strict_subset(
+                    self.carryover_union, self._minimal_open_set_mask, carryover_length, self._mask_length
+                )
+
+                noncarryover_indices = np.nonzero(self._noncarryover_mask * (1 - self.carryover_union))[0]
 
                 if (
-                    (is_strict_subset or (not self._mask_match and is_subset)) and
-                    carryover_length + self._noncarryover_length >= self.flattened_inv[self.i] > carryover_length
+                    (_is_strict_subset or (not self._mask_match and _is_subset)) and
+                    carryover_length + len(noncarryover_indices) + 1 >= self.flattened_inv[self.i] > carryover_length
                 ):
 
-                    self._non_carryover_iter = itertools.combinations(
-                        self._noncarryover_indices,
+                    self._noncarryover_iter = itertools.combinations(
+                        noncarryover_indices,
                         self.flattened_inv[self.i] - carryover_length - 1
                     )
 
-            if self._non_carryover_iter is not None:
+            if self._noncarryover_iter is not None:
                 try:
-                    curr_indices = next(self._non_carryover_iter)
+                    curr_indices = next(self._noncarryover_iter)
                     finding_next = False
 
                 except StopIteration:
                     self._carryover_index += 1
-                    self._non_carryover_iter = None
+                    self._noncarryover_iter = None
 
             else:
                 self._carryover_index += 1
@@ -243,11 +326,6 @@ class _Minimal_Open_Set_Iterator:
         ret = self.carryover_union + non_carryover_portion
         ret[self.i] = 1
         return ret
-
-
-
-
-
 
 class T0_Topology_Iterator:
 
@@ -387,10 +465,15 @@ def calc_T0_topologies(n):
 
     all_homeo_classes = []
 
+    homeo_classes_by_inv = {}
+
     for inv in Inventory_Iterator(n):
         homeo_classes_this_inv = []
 
         for top in T0_Topology_Iterator(inv, power_set):
+
+            if not check_represents_T0_topology(top):
+                raise ValueError
 
             for other_top in homeo_classes_this_inv:
                 if are_homeomorphic(top, other_top, True):
@@ -398,12 +481,26 @@ def calc_T0_topologies(n):
 
             else:
                 homeo_classes_this_inv.append(top)
-
+        # if len(homeo_classes_this_inv) > 0:
+        #     for cls in homeo_classes_this_inv:
+        #         try:
+        #             row_inv = [1] + [0]*n
+        #             for size, count in Counter(np.sum(cls, axis=1)).items():
+        #                 row_inv[size] = count
+        #         except TypeError:
+        #             raise TypeError
+        #         row_inv = tuple(row_inv)
+        #         if (inv, row_inv) in homeo_classes_by_inv:
+        #             homeo_classes_by_inv[(inv, row_inv)].append(cls)
+        #         else:
+        #             homeo_classes_by_inv[(inv, row_inv)] = [cls]
         all_homeo_classes.extend(homeo_classes_this_inv)
+
+
 
     return np.stack(all_homeo_classes, axis=2)
 
-
-print(calc_T0_topologies(7).shape[2])
+print(calc_T0_topologies(8).shape[2])
+# print([(n, calc_T0_topologies(n).shape[2]) for n in range(1, 8)])
 
 
